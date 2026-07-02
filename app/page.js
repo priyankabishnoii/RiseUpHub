@@ -80,7 +80,7 @@ const WHO_FOR = [
   { icon: Code, label: "Tech Learners", sub: "Python, DSA, Web Dev, AI/ML" },
   { icon: Globe, label: "International Aspirants", sub: "GRE, IELTS, SAT, GMAT, TOEFL" },
   { icon: Award, label: "Govt Job Seekers", sub: "UPSC, SSC, Banking, Railways" },
-  { icon: TrendingUp, label: "Self-Learners", sub: "Any skill, any language, any goal" },
+  { icon: TrendingUp, label: "Self Learners", sub: "Any skill, any language, any goal" },
 ];
 
 // ── ROADMAP CATEGORIES ────────────────────────────────────────────────────────
@@ -102,7 +102,7 @@ const CATEGORIES = [
 // ── HOW IT WORKS ──────────────────────────────────────────────────────────────
 const STEPS = [
   { title: "Tell us about yourself", desc: "Your education, skills, goal, daily hours, and learning style. Takes 2 minutes." },
-  { title: "AI builds your roadmap", desc: "Our AI generates a complete month-by-month plan with resources, projects, and milestones in under 30 seconds." },
+  { title: "AI builds your roadmap", desc: "Our AI generates a complete month by month plan with resources, projects, and milestones in under 30 seconds." },
   { title: "Follow. Track. Succeed.", desc: "Save your roadmap, download it, track progress, and update it anytime as your goals evolve." },
 ];
 
@@ -116,7 +116,7 @@ const PLANS = [
     features: [
       "3 roadmap generations / day",
       "Full online roadmap viewer",
-      "Month-wise & weekly plan",
+      "Month wise & weekly plan",
       "Curated resources & books",
       "Save up to 5 roadmaps",
       "Interview prep summary",
@@ -737,7 +737,7 @@ function FinalCTA({ dark }) {
               href="/login"
               className="inline-flex items-center gap-3 px-10 py-5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white font-black text-xl transition-all hover:scale-105 shadow-2xl shadow-indigo-600/30"
             >
-              Build My Roadmap — Free
+              Build My Roadmap Free
               <ArrowRight className="w-6 h-6" />
             </a>
           </div>
