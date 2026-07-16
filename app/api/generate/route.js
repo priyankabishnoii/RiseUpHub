@@ -2,43 +2,53 @@ import Anthropic from "@anthropic-ai/sdk";
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
+import crypto from "crypto";
 
-// ── Rate limit store (in-memory, resets on server restart) ───────────────────
+// ── Rate limit store ──────────────────────────────────────────────────────────
 const rateLimitStore = new Map();
 
 function checkRateLimit(userId) {
   const now = Date.now();
-  const windowMs = 60 * 1000; // 1 minute window
-  const maxRequests = 3; // max 3 requests per minute per user
-
+  const windowMs = 60 * 1000;
+  const maxRequests = 5;
   if (!rateLimitStore.has(userId)) {
     rateLimitStore.set(userId, { count: 1, resetAt: now + windowMs });
     return { allowed: true };
   }
-
   const userData = rateLimitStore.get(userId);
-
-  // Reset if window expired
   if (now > userData.resetAt) {
     rateLimitStore.set(userId, { count: 1, resetAt: now + windowMs });
     return { allowed: true };
   }
-
-  // Check limit
   if (userData.count >= maxRequests) {
-    const waitSeconds = Math.ceil((userData.resetAt - now) / 1000);
-    return { allowed: false, waitSeconds };
+    return { allowed: false, waitSeconds: Math.ceil((userData.resetAt - now) / 1000) };
   }
-
-  // Increment
   userData.count++;
   return { allowed: true };
+}
+
+// ── Generate cache key ────────────────────────────────────────────────────────
+// This is the heart of the caching system
+// Same goal + level + hours + months + style = same cache key = free result
+function generateCacheKey(data) {
+  const normalized = {
+    // Normalize goal: lowercase, trim, remove special chars
+    goal: data.goal.toLowerCase().trim().replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " "),
+    level: data.level?.toLowerCase().trim() || "beginner",
+    hoursPerDay: data.hoursPerDay?.toLowerCase().trim() || "2 hours/day",
+    months: data.months?.toLowerCase().trim() || "6 months",
+    learningStyle: data.learningStyle?.toLowerCase().trim() || "mixed",
+  };
+
+  const keyString = `${normalized.goal}|${normalized.level}|${normalized.hoursPerDay}|${normalized.months}|${normalized.learningStyle}`;
+
+  // Create MD5 hash of the key string
+  return crypto.createHash("md5").update(keyString).digest("hex");
 }
 
 // ── Validate input ────────────────────────────────────────────────────────────
 function validateInput(data) {
   const { goal, education, level, hoursPerDay, months, learningStyle } = data;
-
   if (!goal || typeof goal !== "string" || goal.length < 2 || goal.length > 200) {
     return "Invalid goal. Must be 2-200 characters.";
   }
@@ -47,14 +57,11 @@ function validateInput(data) {
   if (!hoursPerDay || typeof hoursPerDay !== "string") return "Hours per day is required.";
   if (!months || typeof months !== "string") return "Months is required.";
   if (!learningStyle || typeof learningStyle !== "string") return "Learning style is required.";
-
-  // Sanitize — remove any HTML/script tags
   const dangerousPattern = /<script|javascript:|on\w+=/i;
   for (const val of [goal, education, level, hoursPerDay, months, learningStyle]) {
     if (dangerousPattern.test(val)) return "Invalid input detected.";
   }
-
-  return null; // no error
+  return null;
 }
 
 // ── Supabase client ───────────────────────────────────────────────────────────
@@ -76,9 +83,9 @@ async function getSupabase() {
   );
 }
 
-// ── AI Prompt builder ─────────────────────────────────────────────────────────
+// ── AI Prompt ─────────────────────────────────────────────────────────────────
 function buildPrompt(data) {
-  return `You are RiseUpHub's expert AI career coach. Generate a COMPLETE, DETAILED, HIGHLY PERSONALIZED roadmap.
+  return `You are RiseUpHub's expert AI career coach. Generate a COMPLETE roadmap for the following goal.
 
 USER DETAILS:
 - GOAL: ${data.goal}
@@ -92,179 +99,164 @@ USER DETAILS:
 - CURRENT SKILLS: ${data.currentSkills || "None mentioned"}
 - MOTIVATION: ${data.motivation || "Not specified"}
 
-IMPORTANT FORMATTING RULES:
-1. Use bullet points (- ) for ALL lists so they become interactive checkboxes
-2. Use numbered lists (1. 2. 3.) for ordered steps
-3. Use MONTH 1:, MONTH 2: format for monthly plans
-4. Use Day 1:, Day 2: format for daily plans
-5. Use Week 1:, Week 2: for weekly plans
-6. Be extremely specific - name actual books, YouTube channels, websites
+FORMATTING RULES:
+- Use ## for main headings
+- Use ### for sub headings
+- Use **bold** for important terms
+- Use bullet points (- ) for ALL lists
+- Use numbered lists (1. 2.) for ordered steps
+- Use > for important tips/notes
+- Name actual books, YouTube channels, websites
 
-Generate the roadmap using EXACTLY these section markers:
+Generate using EXACTLY these section markers:
 
 ---OVERVIEW---
-3-4 sentences summarizing the complete journey. Be encouraging and realistic.
+3-4 sentences summary. Be encouraging and realistic.
 
 ---ESTIMATED_COMPLETION---
-- Expected completion date based on ${data.hoursPerDay} study
+- Completion timeline for ${data.hoursPerDay} study
 - Key milestone dates
-- What level they will reach
+- Expected result/score
 
 ---MONTHLY_PLAN---
-MONTH 1: [Theme]
-- Week 1-2: [Specific topics]
-- Week 3-4: [Specific topics]  
-- Goal: [Achievement by month end]
-- Resources: [2-3 specific resources]
+## Month 1: [Theme]
+- **Week 1-2:** [Specific topics]
+- **Week 3-4:** [Specific topics]
+- **Goal:** [Achievement by month end]
+- **Resources:** [2-3 specific resources]
 
-MONTH 2: [Theme]
 [Continue for all months in ${data.months}]
 
 ---WEEKLY_SCHEDULE---
-A detailed week schedule for ${data.hoursPerDay} study:
-- Monday: [Specific topic and duration]
-- Tuesday: [Specific topic and duration]
-- Wednesday: [Specific topic and duration]
-- Thursday: [Specific topic and duration]
-- Friday: [Specific topic and duration]
-- Saturday: [Specific topic and duration]
-- Sunday: [Revision and rest]
+## Sample Weekly Schedule
+- **Monday:** [Topic + duration]
+- **Tuesday:** [Topic + duration]
+- **Wednesday:** [Topic + duration]
+- **Thursday:** [Topic + duration]
+- **Friday:** [Topic + duration]
+- **Saturday:** [Topic + duration]
+- **Sunday:** Revision + Rest
 
 ---DAILY_STUDY_PLAN---
-Sample daily routine optimized for ${data.learningStyle}:
-- [Time slot]: [Activity]
-- [Time slot]: [Activity]
-- [Time slot]: [Activity]
+## Daily Routine for ${data.learningStyle} Learner
+- **6:00 AM - 7:00 AM:** [Activity]
+- **7:00 AM - 8:00 AM:** [Activity]
+[Continue full day]
 
 ---SKILLS_ORDER---
-Learn these skills in this exact order:
-1. [Skill name] - [Why first] - [Time needed]
-2. [Skill name] - [Why second] - [Time needed]
+## Learn These Skills in Order
+1. **[Skill Name]** - [Why first] - ⏱️ [Time needed]
+2. **[Skill Name]** - [Why second] - ⏱️ [Time needed]
 [Continue for all skills]
 
 ---FREE_RESOURCES---
-YOUTUBE CHANNELS:
-- [Channel name]: [What it covers and why it's good]
-- [Channel name]: [What it covers]
+## YouTube Channels
+- **[Channel Name]:** [What it covers and why it's great]
 
-WEBSITES:
-- [Website]: [What it offers]
+## Websites
+- **[Website]:** [What it offers]
 
-BOOKS (Free/Affordable):
-- [Book title] by [Author]: [Why read it]
+## Books
+- **[Book Title]** by [Author]: [Why read it]
 
-PRACTICE PLATFORMS:
-- [Platform]: [How to use it]
-
-MOBILE APPS:
-- [App]: [How it helps]
+## Practice Platforms
+- **[Platform]:** [How to use it]
 
 ---RECOMMENDED_COURSES---
-1. [Course name] on [Platform] - [Price] - [Why recommended]
-2. [Course name] on [Platform] - [Price] - [Why recommended]
-3. [Course name] on [Platform] - [Price] - [Why recommended]
+1. **[Course Name]** on [Platform] - [Price] - [Why recommended]
+2. **[Course Name]** on [Platform] - [Price] - [Why recommended]
+3. **[Course Name]** on [Platform] - [Price] - [Why recommended]
 
 ---PROJECTS---
-Build these projects in order:
-1. [Project name]: [What to build] - [Skills demonstrated]
-2. [Project name]: [What to build] - [Skills demonstrated]
-3. [Project name]: [What to build] - [Skills demonstrated]
-4. [Project name]: [What to build] - [Skills demonstrated]
-5. [Project name]: [What to build] - [Skills demonstrated]
+## Projects to Build
+1. **[Project Name]:** [What to build] - *Skills: [what it demonstrates]*
+2. **[Project Name]:** [What to build] - *Skills: [what it demonstrates]*
+3. **[Project Name]:** [What to build] - *Skills: [what it demonstrates]*
+4. **[Project Name]:** [What to build] - *Skills: [what it demonstrates]*
+5. **[Project Name]:** [What to build] - *Skills: [what it demonstrates]*
 
 ---CERTIFICATES---
-Earn these certificates in order:
-1. [Certificate name] from [Platform/Organization] - [When to attempt]
-2. [Certificate name] - [When to attempt]
-3. [Certificate name] - [When to attempt]
+1. **[Certificate]** from [Organization] - 📅 [When to attempt]
+2. **[Certificate]** - 📅 [When to attempt]
+3. **[Certificate]** - 📅 [When to attempt]
 
 ---INTERVIEW_PREP---
-IMPORTANT TOPICS:
-- [Topic 1]: [Why important]
-- [Topic 2]: [Why important]
+## Most Important Topics
+- **[Topic]:** [Why it's critical]
 
-COMMON INTERVIEW QUESTIONS:
-- [Question 1]
-- [Question 2]
-- [Question 3]
+## Common Interview Questions
+- [Question]
+- [Question]
+- [Question]
 
-LAST 30 DAYS STRATEGY:
-- Week 1: [Focus]
-- Week 2: [Focus]
-- Week 3: [Focus]
-- Week 4: [Focus]
-
-MOCK TEST STRATEGY:
-- [Specific advice]
+## Last 30 Days Strategy
+- **Week 1:** [Focus]
+- **Week 2:** [Focus]
+- **Week 3:** [Focus]
+- **Week 4:** [Focus]
 
 ---RESUME_MILESTONES---
-Add these to your resume at each stage:
-1. [Month X]: [Achievement to add]
-2. [Month X]: [Achievement to add]
-3. [Month X]: [Achievement to add]
-4. [Month X]: [Achievement to add]
-5. [Month X]: [Achievement to add]
+1. **Month [X]:** [Achievement to add to resume]
+2. **Month [X]:** [Achievement]
+3. **Month [X]:** [Achievement]
+4. **Month [X]:** [Achievement]
+5. **Month [X]:** [Achievement]
 
 ---PORTFOLIO_MILESTONES---
-1. [Month X]: [Portfolio item to create]
-2. [Month X]: [Portfolio item to create]
-3. [Month X]: [Portfolio item to create]
-4. [Month X]: [Portfolio item to create]
+1. **Month [X]:** [Portfolio item to create]
+2. **Month [X]:** [Portfolio item]
+3. **Month [X]:** [Portfolio item]
 
 ---INTERNSHIP_PREP---
-- [Specific advice for finding internships in this field]
-- [When to start applying]
-- [What to include in applications]
-- [Top companies/organizations to target]
+- **When to apply:** [Specific timing]
+- **Where to apply:** [Specific platforms/companies]
+- **What to include:** [Application tips]
 
 ---BEGINNER_MISTAKES---
-Avoid these common mistakes:
-1. [Mistake]: [How to avoid it]
-2. [Mistake]: [How to avoid it]
-3. [Mistake]: [How to avoid it]
-4. [Mistake]: [How to avoid it]
-5. [Mistake]: [How to avoid it]
-6. [Mistake]: [How to avoid it]
-7. [Mistake]: [How to avoid it]
-8. [Mistake]: [How to avoid it]
+1. **[Mistake]:** [How to avoid it]
+2. **[Mistake]:** [How to avoid it]
+3. **[Mistake]:** [How to avoid it]
+4. **[Mistake]:** [How to avoid it]
+5. **[Mistake]:** [How to avoid it]
+6. **[Mistake]:** [How to avoid it]
+7. **[Mistake]:** [How to avoid it]
+8. **[Mistake]:** [How to avoid it]
 
 ---PRO_TIPS---
-Insider tips to accelerate your progress:
-1. [Specific non-obvious tip]
-2. [Specific non-obvious tip]
-3. [Specific non-obvious tip]
-4. [Specific non-obvious tip]
-5. [Specific non-obvious tip]
-6. [Specific non-obvious tip]
-7. [Specific non-obvious tip]
-8. [Specific non-obvious tip]
+1. 💡 **[Tip]:** [Explanation]
+2. 💡 **[Tip]:** [Explanation]
+3. 💡 **[Tip]:** [Explanation]
+4. 💡 **[Tip]:** [Explanation]
+5. 💡 **[Tip]:** [Explanation]
+6. 💡 **[Tip]:** [Explanation]
+7. 💡 **[Tip]:** [Explanation]
+8. 💡 **[Tip]:** [Explanation]
 
 ---MOTIVATION_STRATEGY---
-- Your "why": [Personalized based on their motivation]
-- Daily habits to stay consistent:
-  - [Habit 1]
-  - [Habit 2]
-  - [Habit 3]
-- When you feel like quitting:
-  - [Strategy 1]
-  - [Strategy 2]
-- Weekly review process:
-  - [Step 1]
-  - [Step 2]`;
+## Why This Goal is Worth It
+- [Reason 1]
+- [Reason 2]
+
+## Daily Habits to Stay Consistent
+- [Habit 1]
+- [Habit 2]
+- [Habit 3]
+
+## When You Feel Like Quitting
+> [Powerful motivational message specific to ${data.goal}]
+- [Strategy 1]
+- [Strategy 2]`;
 }
 
-// ── Main API Handler ──────────────────────────────────────────────────────────
+// ── MAIN API HANDLER ──────────────────────────────────────────────────────────
 export async function POST(request) {
   try {
     // Parse body
     let body;
-    try {
-      body = await request.json();
-    } catch {
-      return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
-    }
+    try { body = await request.json(); }
+    catch { return NextResponse.json({ error: "Invalid request body" }, { status: 400 }); }
 
-    // Validate input
+    // Validate
     const validationError = validateInput(body);
     if (validationError) {
       return NextResponse.json({ error: validationError }, { status: 400 });
@@ -277,7 +269,7 @@ export async function POST(request) {
       return NextResponse.json({ error: "Not authenticated. Please log in." }, { status: 401 });
     }
 
-    // Rate limit check
+    // Rate limit
     const rateCheck = checkRateLimit(user.id);
     if (!rateCheck.allowed) {
       return NextResponse.json(
@@ -286,7 +278,7 @@ export async function POST(request) {
       );
     }
 
-    // Daily limit check (3 per day free)
+    // Daily limit (3 per day free)
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const { count } = await supabase
       .from("roadmaps")
@@ -296,22 +288,83 @@ export async function POST(request) {
 
     if (count >= 3) {
       return NextResponse.json(
-        { error: "You have reached your 3 roadmaps/day limit on the free plan. Upgrade to Pro for unlimited generations." },
+        { error: "Daily limit reached (3/day on free plan). Upgrade to Pro for unlimited generations." },
         { status: 429 }
       );
     }
 
-    // Call Claude AI
-    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-    const message = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 8000,
-      messages: [{ role: "user", content: buildPrompt(body) }],
-    });
+    // ── CACHE CHECK ───────────────────────────────────────────────────────────
+    const cacheKey = generateCacheKey(body);
 
-    const roadmapContent = message.content[0].text;
+    const { data: cachedResult } = await supabase
+      .from("ai_cache")
+      .select("*")
+      .eq("cache_key", cacheKey)
+      .single();
 
-    // Save to database
+    let roadmapContent;
+    let fromCache = false;
+    let tokensSaved = 0;
+
+    if (cachedResult) {
+      // ✅ CACHE HIT - Return existing content (₹0 cost!)
+      roadmapContent = cachedResult.roadmap_content;
+      fromCache = true;
+      tokensSaved = 8000; // approximate tokens saved
+
+      // Update cache hit count and last used
+      await supabase
+        .from("ai_cache")
+        .update({
+          hit_count: cachedResult.hit_count + 1,
+          last_used_at: new Date().toISOString(),
+        })
+        .eq("cache_key", cacheKey);
+
+      // Track cost saving (8000 tokens × $0.000015 ≈ $0.12)
+      await supabase.from("ai_cost_tracker").insert({
+        event_type: "cache_hit",
+        cache_key: cacheKey,
+        goal: body.goal,
+        tokens_saved: tokensSaved,
+        cost_saved_usd: 0.12,
+      });
+
+    } else {
+      // ❌ CACHE MISS - Call Claude AI (costs ₹2)
+      const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+      const message = await anthropic.messages.create({
+        model: "claude-sonnet-4-6",
+        max_tokens: 8000,
+        messages: [{ role: "user", content: buildPrompt(body) }],
+      });
+
+      roadmapContent = message.content[0].text;
+
+      // Save to cache for ALL future users with same parameters
+      await supabase.from("ai_cache").insert({
+        cache_key: cacheKey,
+        goal: body.goal,
+        level: body.level,
+        hours_per_day: body.hoursPerDay,
+        months: body.months,
+        learning_style: body.learningStyle,
+        roadmap_content: roadmapContent,
+        hit_count: 0,
+      });
+
+      // Track cache miss (new generation)
+      await supabase.from("ai_cost_tracker").insert({
+        event_type: "cache_miss",
+        cache_key: cacheKey,
+        goal: body.goal,
+        tokens_saved: 0,
+        cost_saved_usd: 0,
+      });
+    }
+
+    // Save roadmap to user's account
     const { data: saved, error: saveError } = await supabase
       .from("roadmaps")
       .insert({
@@ -336,19 +389,24 @@ export async function POST(request) {
       return NextResponse.json({ error: "Failed to save roadmap." }, { status: 500 });
     }
 
-    return NextResponse.json({ id: saved.id, success: true });
+    return NextResponse.json({
+      id: saved.id,
+      success: true,
+      fromCache,
+      tokensSaved,
+      message: fromCache
+        ? "✨ Roadmap loaded from cache (instant & free!)"
+        : "🤖 Fresh roadmap generated by AI",
+    });
 
   } catch (error) {
     console.error("Generation error:", error);
-
-    // Handle Anthropic specific errors
     if (error?.status === 401) {
-      return NextResponse.json({ error: "AI service authentication failed. Please contact support." }, { status: 500 });
+      return NextResponse.json({ error: "AI service authentication failed." }, { status: 500 });
     }
     if (error?.status === 429) {
-      return NextResponse.json({ error: "AI service is busy. Please try again in a moment." }, { status: 429 });
+      return NextResponse.json({ error: "AI service busy. Please try again." }, { status: 429 });
     }
-
     return NextResponse.json({ error: "Failed to generate roadmap. Please try again." }, { status: 500 });
   }
 }

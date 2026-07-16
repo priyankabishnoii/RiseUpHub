@@ -1,3 +1,4 @@
+import MarkdownContent from "../../../components/MarkdownContent";
 "use client";
 import { useState, useEffect, use } from "react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -123,10 +124,10 @@ function SectionCard({ section, content, isLoggedIn, defaultOpen }) {
             className="overflow-hidden"
           >
             <div className="px-5 pb-5 border-t border-white/[0.05]">
-              <div className="mt-4 text-sm text-gray-300 leading-relaxed whitespace-pre-wrap">
-                {content}
-              </div>
+            <div className="mt-4">
+              <MarkdownContent content={content} />
             </div>
+            </div>{/*<--Added a closing div tag here to fix the JSX structure*/}
           </motion.div>
         )}
       </AnimatePresence>
